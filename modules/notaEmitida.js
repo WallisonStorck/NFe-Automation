@@ -10,68 +10,52 @@ export async function registrarInformacoesNota(page) {
       logger.info("⏳ Aguardando dados da NFS-e emitida aparecerem na tela...");
     }
 
-    // Aguarda até aparecerem os dados essenciais (número e código de verificação)
+    // Aguarda até o painel de dados da nota estar visível e com número preenchido
     await page.waitForFunction(
       () => {
-        const getValue = (label) => {
-          // procura elementos que começam com "Número:" etc.
-          const nodes = Array.from(
-            document.querySelectorAll("label, span, td, th, div"),
-          ).filter((el) => (el.textContent || "").trim().startsWith(label));
+        const container = document.querySelector('[id$=":j_idt1440_content"]');
+        if (!container) return false;
 
-          for (const el of nodes) {
-            // tenta pegar o valor ao lado
-            const v1 = el.nextElementSibling?.textContent?.trim();
-            if (v1) return v1;
-
-            // tenta pegar dentro do mesmo container
-            const parent = el.parentElement;
-            const v2 = parent
-              ?.querySelector("span, strong, b")
-              ?.textContent?.trim();
-            if (v2 && !v2.startsWith(label)) return v2;
-
-            // tenta pegar no próximo elemento do pai (layout em linhas/colunas)
-            const v3 = parent?.nextElementSibling?.textContent?.trim();
-            if (v3) return v3;
+        const pegaTextoNode = (label) => {
+          const divs = Array.from(container.querySelectorAll(":scope > div"));
+          for (const div of divs) {
+            const lbl = div.querySelector("label");
+            if (lbl && lbl.textContent.trim() === label) {
+              return Array.from(div.childNodes)
+                .filter((n) => n.nodeType === 3) // TEXT_NODE
+                .map((n) => n.textContent.trim())
+                .filter((t) => t.length > 0)
+                .join("");
+            }
           }
-
-          return null;
+          return "";
         };
 
-        const numero = getValue("Número:");
-        const codigo = getValue("Código de Verificação:");
-
-        return (
-          numero &&
-          codigo &&
-          numero !== "Não encontrado" &&
-          codigo !== "Não encontrado"
-        );
+        const numero = pegaTextoNode("Número:");
+        const codigo = pegaTextoNode("Código de Verificação:");
+        return numero.length > 0 && codigo.length > 0;
       },
       { timeout: 30000 },
-    ); // ⏱️ mais tempo (o portal pode demorar)
+    );
 
     const dadosNota = await page.evaluate(() => {
+      const container = document.querySelector('[id$=":j_idt1440_content"]');
+
       const pegaTexto = (label) => {
-        const nodes = Array.from(
-          document.querySelectorAll("label, span, td, th, div"),
-        ).filter((el) => (el.textContent || "").trim().startsWith(label));
-
-        for (const el of nodes) {
-          const v1 = el.nextElementSibling?.textContent?.trim();
-          if (v1) return v1;
-
-          const parent = el.parentElement;
-          const v2 = parent
-            ?.querySelector("span, strong, b")
-            ?.textContent?.trim();
-          if (v2 && !v2.startsWith(label)) return v2;
-
-          const v3 = parent?.nextElementSibling?.textContent?.trim();
-          if (v3) return v3;
+        if (!container) return "Não encontrado";
+        const divs = Array.from(container.querySelectorAll(":scope > div"));
+        for (const div of divs) {
+          const lbl = div.querySelector("label");
+          if (lbl && lbl.textContent.trim() === label) {
+            // Lê apenas os text nodes diretos do div (exclui o conteúdo do <label>)
+            const value = Array.from(div.childNodes)
+              .filter((n) => n.nodeType === 3) // Node.TEXT_NODE
+              .map((n) => n.textContent.trim())
+              .filter((t) => t.length > 0)
+              .join("");
+            return value || "Não encontrado";
+          }
         }
-
         return "Não encontrado";
       };
 
@@ -84,7 +68,6 @@ export async function registrarInformacoesNota(page) {
       };
     });
 
-    // Validação simples dos dados obtidos
     if (
       dadosNota.numero !== "Não encontrado" &&
       dadosNota.codigoVerificacao !== "Não encontrado"
@@ -99,10 +82,8 @@ export async function registrarInformacoesNota(page) {
     } else {
       logger.warn("⚠️ Alguns dados da nota não foram encontrados.");
       // ✅ Se chegou aqui, é bem provável que emitiu, mas mudou layout.
-      // Mantemos sucesso=false para você decidir o que fazer no fluxo.
     }
   } catch (error) {
-    // Verifica se existe alguma mensagem de erro no DOM
     const erroSistema = await page.$(".ui-messages-error, .alert-error");
     if (erroSistema) {
       logger.error(
@@ -115,7 +96,7 @@ export async function registrarInformacoesNota(page) {
     }
   }
 
-  // 🔁 Redirecionar de volta à tela de emissão (caso permitido)
+  // Redirecionar de volta à tela de emissão
   if (!CONFIG.SKIP_CONFIRMATION && !CONFIG.TEST_MODE) {
     try {
       logger.info("↩️ Retornando para a tela de emissão de notas...");
@@ -124,30 +105,18 @@ export async function registrarInformacoesNota(page) {
 
       await page.goto(CONFIG.ISS_JARU, { waitUntil: "domcontentloaded" });
 
-      await page.waitForSelector(
-        "#formEmissaoNFConvencional\\:groupDadosTomador\\:j_idt544",
-        {
-          visible: true,
-          timeout: 5000,
-        },
-      );
+      // Usa sentinela estável — o label do dropdown de tipo pessoa
+      await page.waitForSelector('[id$=":groupDadosTomador:j_idt533_label"]', {
+        visible: true,
+        timeout: 10000,
+      });
 
       logger.info("✅ Tela de emissão recarregada com sucesso!");
     } catch (err) {
-      const exists = await page.$(
-        "#formEmissaoNFConvencional\\:groupDadosTomador\\:j_idt544",
-      );
-      if (exists) {
-        logger.info(
-          "✅ Tela de emissão recarregada com sucesso (detected after timeout).",
+      if (CONFIG.VERBOSE) {
+        logger.warn(
+          "⚠️ Não foi possível confirmar visualmente o retorno, mas continuando...",
         );
-      } else {
-        if (CONFIG.VERBOSE) {
-          logger.warn(
-            "⚠️ Não foi possível confirmar visualmente o CPF, mas continuando...",
-          );
-        }
-        // Apenas AVISO, mas continua! Não throw, não aborta
       }
     }
   } else {

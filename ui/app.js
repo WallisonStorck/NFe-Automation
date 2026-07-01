@@ -10,7 +10,8 @@ function initTheme() {
   btn?.addEventListener("click", () => {
     const current = html.getAttribute("data-theme");
     // Ciclo: auto → light → dark → auto
-    const next = current === "auto" ? "light" : current === "light" ? "dark" : "auto";
+    const next =
+      current === "auto" ? "light" : current === "light" ? "dark" : "auto";
     html.setAttribute("data-theme", next);
     localStorage.setItem("nfseTheme", next);
   });
@@ -20,10 +21,12 @@ function initTheme() {
 function initNav() {
   const navItems = document.querySelectorAll(".nav-item");
   const sections = document.querySelectorAll(".section");
-  const content  = document.querySelector(".content");
+  const content = document.querySelector(".content");
 
   // Todas as seções sempre visíveis (scroll contínuo)
-  sections.forEach((s) => { s.style.display = "flex"; });
+  sections.forEach((s) => {
+    s.style.display = "flex";
+  });
 
   // Clique na aba → scroll suave até a seção
   navItems.forEach((item) => {
@@ -98,11 +101,11 @@ function clearLog() {
 
 // ─── Upload ───────────────────────────────────────────────
 function initUpload() {
-  const area        = document.getElementById("uploadArea");
-  const input       = document.getElementById("planilha");
-  const execRow     = document.getElementById("execRow");
+  const area = document.getElementById("uploadArea");
+  const input = document.getElementById("planilha");
+  const execRow = document.getElementById("execRow");
   const hintCompact = document.getElementById("uploadHintCompact");
-  const btnChange   = document.getElementById("btnChange");
+  const btnChange = document.getElementById("btnChange");
 
   if (!area || !input) return;
 
@@ -157,7 +160,10 @@ function initPasswordToggle() {
 // ─── Config ───────────────────────────────────────────────
 function parseIgnorarStatus(value) {
   if (!value) return ["SIM", "ZERADO", "INVALIDO"];
-  return value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  return value
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
 }
 
 function saveConfig() {
@@ -166,7 +172,9 @@ function saveConfig() {
     PASSWORD: document.getElementById("cfgPass").value.trim(),
     IGNORAR_STATUS: document.getElementById("cfgIgnorar").value.trim(),
     DATA_EMISSAO_MANUAL: document.getElementById("cfgData").value.trim() || "",
-    MAX_TENTATIVAS_CPF: Number(document.getElementById("cfgTentativas").value.trim() || "3"),
+    MAX_TENTATIVAS_CPF: Number(
+      document.getElementById("cfgTentativas").value.trim() || "3",
+    ),
   };
 
   localStorage.setItem("nfseConfig", JSON.stringify(cfg));
@@ -182,11 +190,14 @@ function saveConfig() {
   }, 2000);
 
   addLog("✅ Configurações salvas.");
-  addLog("   Usuário: " + (cfg.USERNAME || "(vazio)"));
-  addLog("   Senha: " + (cfg.PASSWORD ? "••••••••" : "(vazio)"));
-  addLog("   Ignorar: " + (cfg.IGNORAR_STATUS || "SIM, ZERADO, INVALIDO (padrão)"));
-  addLog("   Data: " + (cfg.DATA_EMISSAO_MANUAL || "portal"));
-  addLog("   Tentativas CPF: " + cfg.MAX_TENTATIVAS_CPF);
+  addLog("👤 Usuário: " + (cfg.USERNAME || "(vazio)"));
+  addLog("🔑 Senha: " + (cfg.PASSWORD ? "••••••••" : "(vazio)"));
+  addLog(
+    "⏭️ Ignorar: " + (cfg.IGNORAR_STATUS || "SIM, ZERADO, INVALIDO (padrão)"),
+  );
+  addLog("📅 Data: " + (cfg.DATA_EMISSAO_MANUAL || "portal"));
+  addLog("🔄 Tentativas CPF: " + cfg.MAX_TENTATIVAS_CPF);
+  addLog("------------------------------------------------");
 }
 
 function loadConfig() {
