@@ -18,6 +18,27 @@ import { registrarInformacoesNota } from "./notaEmitida.js";
 import { atualizarAlunoNaPlanilha } from "./planilha.js";
 import { ensurePaginaEmissao } from "./sessao.js";
 
+/**
+ * Aguarda o PrimeFaces terminar todos os requests AJAX em andamento.
+ * Evita race conditions entre seleções de dropdown e preenchimento de campos.
+ */
+async function aguardarAjaxPrimeFaces(page, timeout = 8000) {
+  await page
+    .waitForFunction(
+      () => {
+        try {
+          return (
+            typeof PrimeFaces === "undefined" || PrimeFaces.ajax.Queue.isEmpty()
+          );
+        } catch {
+          return true;
+        }
+      },
+      { timeout },
+    )
+    .catch(() => {}); // se PrimeFaces não tiver Queue, ignora
+}
+
 // 🧠 Função principal que processa um aluno e tenta emitir a NFS-e
 export async function processarAluno(page, aluno, index, alunos) {
   logger.info(
@@ -35,8 +56,12 @@ export async function processarAluno(page, aluno, index, alunos) {
     // 👤 Define como pessoa física (ou jurídica se alterado no futuro)
     await selecionarTipoPessoa(page);
 
+    // ⏳ Aguarda o AJAX do PrimeFaces estabilizar após troca de tipo de pessoa.
+    // Sem isso, o campo CPF pode estar sendo re-renderizado quando page.click() roda.
+    await aguardarAjaxPrimeFaces(page);
+    await new Promise((r) => setTimeout(r, 800)); // buffer extra de segurança
+
     // 🧾 Insere o CPF do aluno
-    // >>> Mudança mínima: se falhar (após as tentativas internas), apenas pula o aluno <<<
     try {
       await inserirCPF(page, aluno.CPF);
     } catch (err) {
@@ -67,7 +92,7 @@ export async function processarAluno(page, aluno, index, alunos) {
       logger.warn(
         `⏭️ Nota NÃO emitida para ${aluno.ALUNO} devido a valor inválido ou zerado.`,
       );
-      return false; // Impede avanço no processamento, mas NÃO derruba a automação
+      return false;
     }
 
     // ➕ Adiciona o item e salva a nota
@@ -78,10 +103,7 @@ export async function processarAluno(page, aluno, index, alunos) {
     const notaEmitida = await registrarInformacoesNota(page);
 
     if (notaEmitida) {
-      // Atualiza a planilha com status "SIM"
       atualizarAlunoNaPlanilha(alunos, index);
-
-      // Guarda o último aluno marcado com sucesso, para garantir que seja salvo se o usuário interromper
       global.ultimoProcessado = { alunos, index };
     } else {
       logger.warn(
@@ -90,7 +112,7 @@ export async function processarAluno(page, aluno, index, alunos) {
     }
 
     logger.info("✅ Processamento da nota concluída!");
-    return true; // Tudo OK
+    return true;
   } catch (error) {
     // ✅ Tenta recuperar a tela de emissão antes de seguir
     try {
@@ -99,7 +121,6 @@ export async function processarAluno(page, aluno, index, alunos) {
       // não impede o tratamento do erro original
     }
 
-    // >>> Mudança mínima: se o erro for o de CPF, não derruba; caso contrário, mantém comportamento original <<<
     const msg = error?.message?.toLowerCase?.() || "";
     const ehFalhaCPF =
       msg.includes("falha ao inserir cpf") || msg.includes("cpf");
@@ -108,10 +129,10 @@ export async function processarAluno(page, aluno, index, alunos) {
       logger.warn(
         `⏭️ Falha de CPF tratada para "${aluno.ALUNO}". Pulando aluno.`,
       );
-      return false; // NÃO derruba a automação
+      return false;
     }
 
     logger.error(`❌ Erro ao processar ${aluno.ALUNO}: ${error.message}`);
-    throw error; // mantém fatal para outros tipos de erro
+    throw error;
   }
 }

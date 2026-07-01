@@ -6,11 +6,17 @@ import { logger } from "../modules/logger.js";
 // sleep compatível com qualquer versão do Puppeteer
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Seletores "sentinela" da tela de emissão (usar sufixos JSF/PrimeFaces). */
+/**
+ * Seletores "sentinela" da tela de emissão.
+ *
+ * ⚠️ REMOVIDO: '[id$=":groupDadosTomador:j_idt544"]'
+ * Esse era o campo CPF — ele só aparece no DOM quando "Física" está selecionada.
+ * Quando a página carrega com o default "Jurídica", ele não existe,
+ * fazendo a sentinela falhar nas iterações seguintes.
+ */
 const SENTINELAS_EMISSAO = [
-  '[id$=":itCpf"]',
-  '[id$=":tipoPessoa_input"]',
-  '[id$=":descricaoItem"]',
+  '[id$=":groupDadosTomador:j_idt533_label"]', // dropdown tipo pessoa — sempre visível
+  '[id$=":descricaoItem"]', // campo descrição — sempre visível
 ];
 
 /** Seletores genéricos da tela de login (ajuste se o portal mudar) */
@@ -40,7 +46,6 @@ async function isLoginScreen(page) {
   try {
     const u = await page.$(USER_SEL);
     const p = await page.$(PASS_SEL);
-    // não exijo o botão, pois alguns portais enviam com Enter
     return !!(u && p);
   } catch {
     return false;
@@ -59,6 +64,7 @@ export async function ensurePaginaEmissao(
 ) {
   try {
     if (await hasEmissionSentinel(page, 1000)) {
+      await sleep(2000);
       if (cfg.VERBOSE) {
         logger.info("✅ Tela de emissão detectada.");
       }
@@ -72,8 +78,8 @@ export async function ensurePaginaEmissao(
     }
     await page.goto(cfg.ISS_JARU, { waitUntil: "domcontentloaded" });
 
-    // alguns portais demoram para hidratar os componentes
     if (await hasEmissionSentinel(page, 15000)) {
+      await sleep(2000);
       if (cfg.VERBOSE) {
         logger.info("✅ Página de emissão carregada e validada.");
       }
@@ -88,6 +94,7 @@ export async function ensurePaginaEmissao(
     await page.reload({ waitUntil: "domcontentloaded" });
 
     if (await hasEmissionSentinel(page, 15000)) {
+      await sleep(2000);
       logger.info("✅ Página de emissão carregada e validada.");
       return;
     }
@@ -95,17 +102,16 @@ export async function ensurePaginaEmissao(
     throw new Error("Sentinelas da emissão não foram encontradas.");
   } catch (e) {
     logger.error(`❌ Falha ao garantir tela de emissão: ${e.message}`);
-    throw e; // fatal: sem a tela não dá pra processar
+    throw e;
   }
 }
 
 /**
- * Restaura sessão por cookies, **mas** trata casos em que a sessão
+ * Restaura sessão por cookies, mas trata casos em que a sessão
  * já está ativa mesmo sem cookies (navegador mantido aberto).
  * Retorna: "restaurada" | "expirada" | "ausente"
  */
 export async function restaurarSessao(page, cfg = CONFIG) {
-  // 0) Primeiro, vê se já estamos autenticados (sem depender de cookies)
   try {
     await page.goto(cfg.ISS_JARU, { waitUntil: "domcontentloaded" });
   } catch {
@@ -113,17 +119,15 @@ export async function restaurarSessao(page, cfg = CONFIG) {
   }
 
   if (await hasEmissionSentinel(page, 1500)) {
+    await sleep(2000);
     logger.info("🔐 Sessão ativa detectada (sem uso de cookies).");
     return "restaurada";
   }
 
-  // 1) Sem cookies?
   if (!fs.existsSync(cfg.COOKIE_FILE)) {
     if (cfg.VERBOSE) {
       logger.info("ℹ️ Cookie file ausente — sem sessão para restaurar.");
     }
-    // Mesmo sem cookies, pode estar logado porém fora da emissão
-    // Tenta ir direto pra emissão:
     try {
       await ensurePaginaEmissao(page, "pós-checagem de cookies ausentes", cfg);
       return "restaurada";
@@ -132,19 +136,16 @@ export async function restaurarSessao(page, cfg = CONFIG) {
     }
   }
 
-  // 2) Com cookies
   try {
     if (cfg.VERBOSE) {
       logger.info("🍪 Tentando restaurar sessão a partir dos cookies...");
     }
-    // Ir ao domínio alvo ajuda o setCookie
     await page.goto(cfg.ISS_JARU, { waitUntil: "domcontentloaded" });
 
     const cookies = JSON.parse(await fs.readFile(cfg.COOKIE_FILE, "utf8"));
     if (!Array.isArray(cookies) || cookies.length === 0) {
       logger.warn("⚠️ Cookie file vazio — removendo arquivo.");
       await fs.remove(cfg.COOKIE_FILE);
-      // tenta emissão mesmo assim (pode já estar logado)
       try {
         await ensurePaginaEmissao(page, "pós-cookies vazios", cfg);
         return "restaurada";
@@ -156,7 +157,6 @@ export async function restaurarSessao(page, cfg = CONFIG) {
     await page.setCookie(...cookies);
     await page.reload({ waitUntil: "domcontentloaded" });
 
-    // Se estiver em login, expirou
     if (await isLoginScreen(page)) {
       if (cfg.VERBOSE) {
         logger.warn(
@@ -167,19 +167,17 @@ export async function restaurarSessao(page, cfg = CONFIG) {
       return "expirada";
     }
 
-    // Se já dá pra ver a emissão, restaurou
     if (await hasEmissionSentinel(page, 1500)) {
+      await sleep(2000);
       logger.info("🔐 Sessão restaurada com sucesso (sentinela encontrada).");
       return "restaurada";
     }
 
-    // Pode estar logado mas em outra página → garante emissão
     try {
       await ensurePaginaEmissao(page, "pós-restauração", cfg);
       logger.info("🔐 Sessão restaurada com sucesso (após navegação).");
       return "restaurada";
     } catch {
-      // não conseguimos detectar emissão — trate como expirada
       await fs.remove(cfg.COOKIE_FILE).catch(() => {});
       return "expirada";
     }
@@ -193,7 +191,7 @@ export async function restaurarSessao(page, cfg = CONFIG) {
 }
 
 /**
- * Faz login **somente se necessário**:
+ * Faz login somente se necessário.
  * - Se já estiver autenticado (emissão visível), NÃO tenta logar.
  * - Se não for tela de login, tenta ir direto pra emissão.
  * - Só digita credenciais quando a tela de login está presente.
@@ -203,11 +201,10 @@ export async function fazerLogin(page, cfg = CONFIG) {
   if (cfg.VERBOSE) {
     logger.info("🔑 Realizando login…");
   }
-  // Garante que estamos no domínio alvo
   await page.goto(cfg.ISS_JARU, { waitUntil: "domcontentloaded" });
 
-  // 1) Já autenticado? (sentinela na tela atual)
   if (await hasEmissionSentinel(page, 1500)) {
+    await sleep(2000);
     if (cfg.VERBOSE) {
       logger.info("✅ Sessão já autenticada — pulando login.");
     }
@@ -215,16 +212,13 @@ export async function fazerLogin(page, cfg = CONFIG) {
     return;
   }
 
-  // 2) Tela de login presente?
   if (!(await isLoginScreen(page))) {
-    // Não é login; pode estar autenticado em outra tela
     logger.warn("ℹ️ Não é a tela de login. Tentando ir direto para a emissão.");
     await ensurePaginaEmissao(page, "pós-deteção de não-login", cfg);
     await salvarCookies(page, cfg);
     return;
   }
 
-  // 3) É login de fato — procede
   if (cfg.VERBOSE) {
     logger.info(
       `🧭 Campos de login detectados: user="${USER_SEL}" pass="${PASS_SEL}"`,
@@ -254,7 +248,6 @@ export async function fazerLogin(page, cfg = CONFIG) {
     page.click(BTN_SEL),
   ]);
 
-  // Se ainda for a tela de login, falhou
   if (await isLoginScreen(page)) {
     throw new Error("Credenciais inválidas ou bloqueio no login.");
   }

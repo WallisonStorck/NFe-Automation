@@ -36,134 +36,199 @@ export async function selecionarTipoPessoa(page) {
     logger.info("🔄 Selecionando Tipo de Pessoa...");
   }
 
+  const LABEL_SEL =
+    "#formEmissaoNFConvencional\\:groupDadosTomador\\:j_idt533_label";
+  const INPUT_SEL =
+    "#formEmissaoNFConvencional\\:groupDadosTomador\\:j_idt533_input";
+
   try {
-    await page.waitForSelector(
-      "#formEmissaoNFConvencional\\:tipoPessoa_input",
-      { visible: true },
+    // 1) Aguarda o label visível
+    await page.waitForSelector(LABEL_SEL, { visible: true, timeout: 30000 });
+
+    // 2) Rola até o elemento
+    await page.evaluate((sel) => {
+      document.querySelector(sel)?.scrollIntoView({ block: "center" });
+    }, LABEL_SEL);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // 3) Verifica se já está como Física (evita clique desnecessário)
+    const labelAtual = await page.evaluate(
+      (sel) => document.querySelector(sel)?.textContent?.trim() || "",
+      LABEL_SEL,
     );
-    await page.select(
-      "#formEmissaoNFConvencional\\:tipoPessoa_input",
-      "FISICA",
-    );
+
+    if (
+      labelAtual.toLowerCase().includes("física") ||
+      labelAtual.toLowerCase().includes("fisica")
+    ) {
+      if (CONFIG.VERBOSE) {
+        logger.info("✅ Tipo de pessoa já está como Física, pulando seleção.");
+      }
+      return;
+    }
+
+    // 4) Tenta manipular o <select> oculto diretamente via JS
+    const selecionadoViaDom = await page.evaluate((inputSel) => {
+      const select = document.querySelector(inputSel);
+      if (!select) return false;
+      const option = Array.from(select.options).find(
+        (o) =>
+          o.value === "FISICA" ||
+          (o.textContent || "").toLowerCase().includes("física") ||
+          (o.textContent || "").toLowerCase().includes("fisica"),
+      );
+      if (!option) return false;
+      select.value = option.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }, INPUT_SEL);
+
+    if (selecionadoViaDom) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (CONFIG.VERBOSE) {
+        logger.info("✅ Tipo de pessoa definido como Física (via DOM)");
+      }
+      return;
+    }
+
+    // 5) Fallback: clica no label para abrir o dropdown e clica na opção
+    await page.click(LABEL_SEL);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    const clicou = await page.evaluate(() => {
+      const items = document.querySelectorAll("li.ui-selectonemenu-item");
+      for (const item of items) {
+        const texto = (item.textContent || "").toLowerCase();
+        if (texto.includes("física") || texto.includes("fisica")) {
+          item.click();
+          return true;
+        }
+      }
+      const roleItems = document.querySelectorAll("[role='option']");
+      for (const item of roleItems) {
+        const texto = (item.textContent || "").toLowerCase();
+        if (texto.includes("física") || texto.includes("fisica")) {
+          item.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (!clicou) {
+      throw new Error(
+        "Opção 'Física' não encontrada no dropdown de Tipo de Pessoa.",
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
     if (CONFIG.VERBOSE) {
       logger.info("✅ Tipo de pessoa definido como Física");
     }
-
-    // Pequeno delay para garantir que a seleção seja processada
-    await new Promise((resolve) => setTimeout(resolve, 1000));
   } catch (error) {
     logger.error("❌ Erro ao selecionar o tipo de pessoa:", error.message);
+    throw error;
   }
 }
 
 export async function inserirCPF(page, cpf) {
+  const CPF_SEL = "#formEmissaoNFConvencional\\:groupDadosTomador\\:j_idt544";
+  const NOME_SEL = "#formEmissaoNFConvencional\\:groupDadosTomador\\:razaoNome";
+
   try {
-    // 🔄 Espera o campo CPF aparecer antes de interagir
-    await page.waitForSelector("#formEmissaoNFConvencional\\:itCpf", {
+    // Aguarda o campo CPF ficar visível no DOM (só existe quando tipo=Física)
+    // Timeout maior pois depende do AJAX de selecionarTipoPessoa terminar
+    await page.waitForSelector(CPF_SEL, {
       visible: true,
-      timeout: 10000,
+      timeout: 15000,
     });
 
-    let tentativas = 0; // Número de tentativas realizadas
-    // let CONFIG.MAX_TENTATIVAS_CPF = 5; // Número máximo de tentativas que irá realizar...
-    let nameFilledIn = ""; // Campo que indicará se o CPF foi aceito pelo sistema
+    // Buffer adicional — garante que o campo está estável após re-render do PrimeFaces
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    let tentativas = 0;
+    let nameFilledIn = "";
 
     while (tentativas < CONFIG.MAX_TENTATIVAS_CPF) {
       tentativas++;
 
-      // 🔄 Garante que o campo CPF está selecionado corretamente antes de digitar
-      await page.click("#formEmissaoNFConvencional\\:itCpf", { clickCount: 3 });
+      // A partir da tentativa 2: se j_idt544 sumiu do DOM, significa que o
+      // PrimeFaces re-renderizou o form após encontrar o aluno — sucesso real
+      if (tentativas > 1) {
+        const cpfFieldExists = await page.evaluate(
+          (sel) => !!document.querySelector(sel),
+          CPF_SEL,
+        );
+        if (!cpfFieldExists) {
+          logger.info(
+            "Cadastro encontrado (formulario re-renderizado pelo PrimeFaces).",
+          );
+          return;
+        }
+      }
+
+      // Usa page.evaluate para focus+select — evita race condition com
+      // elemento recem-renderizado que ainda pode estar sendo reattached ao DOM
+      await page.evaluate((sel) => {
+        const input = document.querySelector(sel);
+        if (!input) throw new Error("Campo CPF nao encontrado: " + sel);
+        input.focus();
+        input.select();
+      }, CPF_SEL);
+
       await page.keyboard.press("Backspace");
       await page.keyboard.press("Delete");
 
-      // 🕒 Aguarda o campo realmente ficar vazio antes de começar a digitar
       await page
         .waitForFunction(
-          () => {
-            const input = document.querySelector(
-              "#formEmissaoNFConvencional\\:itCpf",
-            );
+          (sel) => {
+            const input = document.querySelector(sel);
             return input && input.value.trim() === "";
           },
           { timeout: 4000 },
+          CPF_SEL,
         )
-        .catch(() => {}); // se não limpar em 2s, segue mesmo assim
+        .catch(() => {});
 
-      // 🖊️ Digita o CPF lentamente para evitar erro de máscara
       for (let char of cpf) {
-        await page.type("#formEmissaoNFConvencional\\:itCpf", char, {
-          delay: 200, // digitação ainda mais lenta para evitar problemas
-        });
+        await page.type(CPF_SEL, char, { delay: 200 });
       }
 
-      // 🔄 Pressiona "Tab" para forçar a saída do campo e ativar preenchimento automático
       await page.keyboard.press("Tab");
       logger.info(
         `⏳ Buscando cadastro... [Tentativa ${tentativas}/${CONFIG.MAX_TENTATIVAS_CPF}]`,
       );
 
-      // 🕒 Aguarda a resposta do sistema
       await new Promise((resolve) => setTimeout(resolve, 6000));
 
-      // 🔍 Verifica se o nome foi preenchido corretamente
-      nameFilledIn = await page.evaluate(() => {
-        return document.querySelector("#formEmissaoNFConvencional\\:razaoNome")
-          ?.value;
-      });
+      nameFilledIn = await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        // PrimeFaces pode armazenar o valor em .value, textContent ou innerText
+        return (
+          el?.value?.trim() ||
+          el?.textContent?.trim() ||
+          el?.innerText?.trim() ||
+          ""
+        );
+      }, NOME_SEL);
 
       if (nameFilledIn && nameFilledIn.trim() !== "") {
         if (CONFIG.VERBOSE) {
           logger.info("✅ CPF inserido corretamente.");
         }
-        return; // ✅ CPF foi validado — sai da função!
+        return;
       }
     }
 
-    // ❌ Se não conseguir após todas tentativas, apenas retorna false
     throw new Error(
       `Falha ao inserir CPF ${cpf} após ${tentativas} tentativas. Talvez o aluno não esteja cadastrado... Pulando para o próximo...`,
     );
   } catch (error) {
     logger.error(`❌ ${error.message}`);
-    throw error; // ⛔ Repassa o erro para interromper o fluxo no processarAluno()
+    throw error;
   }
 }
-
-// export async function inserirCNAE(page) {
-//   logger.info("⏳ Inserindo CNAE...");
-//   let cnaePreenchido = "";
-//   do {
-//     if (CONFIG.VERBOSE) {
-//       logger.info("🔄 Tentando selecionar CNAE...");
-//     }
-//     await page.evaluate(() => window.scrollBy(0, 300));
-//     await new Promise((resolve) => setTimeout(resolve, 1000));
-//     await page.click("#formEmissaoNFConvencional\\:listaAtvCnae_label");
-//     await new Promise((resolve) => setTimeout(resolve, 500));
-//     await page.evaluate(() => {
-//       let opcoes = document.querySelectorAll("li.ui-selectonemenu-item");
-//       opcoes.forEach((opcao) => {
-//         if (
-//           opcao.innerText.includes(
-//             "8532500 - Educação superior - graduação e pós-graduação",
-//           )
-//         ) {
-//           opcao.click();
-//         }
-//       });
-//     });
-//     await new Promise((resolve) => setTimeout(resolve, 2000));
-//     await page.click("body");
-//     cnaePreenchido = await page.evaluate(() => {
-//       return document
-//         .querySelector("#formEmissaoNFConvencional\\:listaAtvCnae_label")
-//         ?.textContent.trim();
-//     });
-//   } while (!cnaePreenchido || !cnaePreenchido.includes("8532500"));
-//   if (CONFIG.VERBOSE) {
-//     logger.info("✅ CNAE inserido com sucesso!.");
-//   }
-// }
 
 export async function inserirAtividadeMunicipal(page) {
   logger.info("⏳ Inserindo Atividade Municipal...");
@@ -179,7 +244,6 @@ export async function inserirAtividadeMunicipal(page) {
   await page.waitForSelector(SELECT_SEL, { visible: true, timeout: 30000 });
 
   // 2) Espera a opção do código aparecer (porque depende do CNAE)
-  //    Isso garante que você já selecionou o CNAE antes.
   if (CONFIG.VERBOSE) {
     logger.info(
       "⏳ Aguardando opções da Atividade Municipal carregarem (dependente do CNAE)...",
@@ -361,7 +425,6 @@ export async function inserirCodigoIndicadorOperacao(page) {
 
     // 3) Clica na opção correta
     const clicou = await page.evaluate((value) => {
-      // Tenta li padrão do PrimeFaces
       const liItems = document.querySelectorAll("li.ui-selectonemenu-item");
       for (const item of liItems) {
         if (item.textContent?.includes(value)) {
@@ -370,7 +433,6 @@ export async function inserirCodigoIndicadorOperacao(page) {
         }
       }
 
-      // Tenta linhas de tabela
       const trItems = document.querySelectorAll(
         ".ui-selectonemenu-items-wrapper tr",
       );
@@ -381,7 +443,6 @@ export async function inserirCodigoIndicadorOperacao(page) {
         }
       }
 
-      // Tenta qualquer elemento com role="option"
       const roleItems = document.querySelectorAll("[role='option']");
       for (const item of roleItems) {
         if (item.textContent?.includes(value)) {
@@ -442,7 +503,6 @@ export async function inserirClassificacaoTributaria(page) {
 
     // 3) Clica na opção correta
     const clicou = await page.evaluate((value) => {
-      // Tenta li padrão do PrimeFaces
       const liItems = document.querySelectorAll("li.ui-selectonemenu-item");
       for (const item of liItems) {
         if (item.textContent?.includes(value)) {
@@ -451,7 +511,6 @@ export async function inserirClassificacaoTributaria(page) {
         }
       }
 
-      // Tenta linhas de tabela
       const trItems = document.querySelectorAll(
         ".ui-selectonemenu-items-wrapper tr",
       );
@@ -462,7 +521,6 @@ export async function inserirClassificacaoTributaria(page) {
         }
       }
 
-      // Tenta qualquer elemento com role="option"
       const roleItems = document.querySelectorAll("[role='option']");
       for (const item of roleItems) {
         if (item.textContent?.includes(value)) {
@@ -514,12 +572,11 @@ export async function inserirMensagem(page, aluno) {
     });
   }
 
-  // Se não conseguiu capturar a data, loga um erro
   if (!dataEmissaoFinal || !/^\d{2}\/\d{2}\/\d{4}$/.test(dataEmissaoFinal)) {
     logger.error(
       "❌ Erro ao obter a data de emissão. Verifique o campo de data.",
     );
-    return; // Não prosseguir sem uma data válida
+    return;
   }
 
   const [dia, mes, ano] = dataEmissaoFinal.split("/");
@@ -527,17 +584,14 @@ export async function inserirMensagem(page, aluno) {
     logger.info(`✅ Data de emissão confirmada: ${dataEmissaoFinal}`);
   }
 
-  // Obtém o código do serviço do aluno e verifica se há uma mensagem configurada
   const CodServico = parseInt(aluno.CODSERVICO, 10);
   let mensagemTemplate = MENSAGENS[CodServico] || MENSAGENS.default;
 
-  // Substituir os placeholders {curso}, {mes} e {ano} pela informação real do aluno
   let mensagem = mensagemTemplate
     .replace("{curso}", aluno.CURSO)
     .replace("{mes}", mes)
     .replace("{ano}", ano);
 
-  // Preencher o textarea com a mensagem correta
   await page.click("#formEmissaoNFConvencional\\:descricaoItem", {
     clickCount: 3,
   });
@@ -551,7 +605,6 @@ export async function inserirMensagem(page, aluno) {
 }
 
 export async function inserirValor(page, aluno) {
-  // ✅ Valor canônico vindo do planilha.js
   const valorNumerico =
     typeof aluno?.__VALOR_NUM === "number" ? aluno.__VALOR_NUM : NaN;
 
@@ -570,17 +623,14 @@ export async function inserirValor(page, aluno) {
     return false;
   }
 
-  // Garante que o valor tem duas casas decimais e formato com vírgula
   const valorFormatado = valorNumerico.toFixed(2).replace(".", ",");
 
-  // Limpa o campo antes de digitar
   await page.click("#formEmissaoNFConvencional\\:vlrUnitario_input", {
     clickCount: 3,
   });
   await page.keyboard.press("Backspace");
   await page.keyboard.press("Delete");
 
-  // Digita o valor lentamente
   for (let char of valorFormatado) {
     await page.type("#formEmissaoNFConvencional\\:vlrUnitario_input", char, {
       delay: 150,
@@ -589,7 +639,6 @@ export async function inserirValor(page, aluno) {
 
   logger.info(`💵 Valor digitado: R$ ${valorFormatado}`);
 
-  // Dispara evento de mudança
   await page.evaluate(() => {
     const input = document.querySelector(
       "#formEmissaoNFConvencional\\:vlrUnitario_input",
@@ -601,7 +650,6 @@ export async function inserirValor(page, aluno) {
 
   await new Promise((resolve) => setTimeout(resolve, 1000));
 
-  // Valida o valor final no campo (tratando ponto de milhar)
   const valorNoCampo = await page.evaluate(() => {
     const input = document.querySelector(
       "#formEmissaoNFConvencional\\:vlrUnitario_input",
@@ -628,7 +676,6 @@ export async function clicarAdicionarItem(page) {
       logger.info("➕ Adicionando item à nota...");
     }
 
-    // Clica no botão de adicionar item
     await page.evaluate(() => {
       const botaoAdicionar = document.querySelector(
         "#formEmissaoNFConvencional\\:btnAddItem",
@@ -641,10 +688,8 @@ export async function clicarAdicionarItem(page) {
       }
     });
 
-    // Aguarda o processamento do sistema
     await new Promise((resolve) => setTimeout(resolve, 3000));
 
-    // Verifica se o item foi adicionado à tabela
     const itemAdicionado = await page.evaluate(() => {
       const tabela = document.querySelector(
         "#formEmissaoNFConvencional\\:listaItensNota_data",
@@ -678,10 +723,8 @@ export async function clicarSalvarNota(page) {
       logger.info("💾 Salvando a nota...");
     }
 
-    // Aguarda o botão de salvar ficar visível
     await page.waitForSelector("#frmActions\\:btnDefault", { visible: true });
 
-    // Simula interações humanas antes do clique
     await page.evaluate(() => {
       let botaoSalvar = document.querySelector("#frmActions\\:btnDefault");
       if (botaoSalvar) {
@@ -693,7 +736,6 @@ export async function clicarSalvarNota(page) {
       }
     });
 
-    // Pequeno delay para garantir que o modal carregue
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
     const modalVisivel = await page.evaluate(() => {
@@ -714,10 +756,9 @@ export async function clicarSalvarNota(page) {
         logger.warn(
           "⚠️  SKIP_CONFIRMATION ativado: o script NÃO confirmará a nota.",
         );
-        return false; // Modal visível, mas não confirmamos
+        return false;
       }
 
-      // Clica no botão de confirmação normalmente
       await page.evaluate(() => {
         const botao = document.querySelector("#frmActions\\:j_idt480");
         if (botao) {
